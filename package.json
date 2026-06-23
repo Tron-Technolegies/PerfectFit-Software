@@ -1,0 +1,65 @@
+{
+  "name": "perfect-fit-desktop",
+  "version": "1.1.1",
+  "description": "Perfect Fit – Clothing Rental & Stitching Management System",
+  "author": "Tron Technologies",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "start-django": "cd backend && py manage.py runserver 8000",
+    "start-react": "npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173",
+    "electron": "wait-on http://localhost:5173 && electron .",
+    "dev": "concurrently -k -n django,react,electron \"npm run start-django\" \"npm run start-react\" \"npm run electron\"",
+    "build:frontend": "npm --prefix frontend run build",
+    "build:backend": "cd backend && build_backend.bat",
+    "dist": "npm run build:frontend && electron-builder --win"
+  },
+  "build": {
+    "appId": "com.perfectfit.desktop",
+    "productName": "Perfect Fit",
+    "copyright": "Copyright © 2026 Tron Technologies",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "frontend/dist",
+        "to": "frontend",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "backend/dist/perfectfit-server.exe",
+        "to": "backend/perfectfit-server.exe"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "electron/assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Perfect Fit",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    }
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^39.2.6",
+    "electron-builder": "^26.8.1",
+    "wait-on": "^9.0.3"
+  }
+}

@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+body {
+  font-family: "Inter", sans-serif;
+}
+.menu {
+  @apply flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100;
+}
+
+.input {
+  border: 1px solid #00000014;
+  border-radius: 8px;
+  padding: 6px 12px;
+}

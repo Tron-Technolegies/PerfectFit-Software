@@ -1,0 +1,9 @@
+node_modules/
+release/
+frontend/node_modules/
+frontend/dist/
+backend/__pycache__/
+backend/**/*.pyc
+backend/.env
+backend/venv/
+backend/env/
