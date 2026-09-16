@@ -19,7 +19,7 @@
     "productName": "Perfect Fit",
     "copyright": "Copyright © 2026 Tron Technologies",
     "directories": {
-      "output": "release"
+      "output": "electron/releases"
     },
     "files": [
       "electron/**/*",

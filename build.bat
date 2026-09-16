@@ -7,7 +7,7 @@ REM  What it does:
 REM    1. Install Python build tools (waitress + pyinstaller)
 REM    2. Bundle Django backend → backend\dist\perfectfit-server.exe
 REM    3. Build React frontend  → frontend\dist\
-REM    4. Package everything    → release\Perfect Fit Setup 1.0.0.exe
+REM    4. Package everything    → electron\releases\Perfect Fit Setup 1.1.1.exe
 REM
 REM  Requirements:
 REM    - `py` (Python Windows Launcher) in PATH
@@ -91,6 +91,6 @@ if %ERRORLEVEL% NEQ 0 (
 echo.
 echo ====================================================================
 echo  BUILD COMPLETE!
-echo  Installer: release\Perfect Fit Setup 1.0.4.exe
+echo  Installer: electron\releases\Perfect Fit Setup 1.1.1.exe
 echo ====================================================================
 echo.

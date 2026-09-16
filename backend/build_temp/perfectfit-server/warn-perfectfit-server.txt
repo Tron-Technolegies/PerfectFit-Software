@@ -97,7 +97,7 @@ missing module named 'reportlab.lib.pyHnj' - imported by reportlab.lib.utils (de
 missing module named macostools - imported by reportlab.lib.utils (conditional), reportlab.graphics.renderPDF (delayed, conditional, optional), reportlab.graphics.shapes (delayed, conditional)
 missing module named macfs - imported by reportlab.lib.utils (conditional), reportlab.graphics.renderPDF (delayed, conditional, optional), reportlab.graphics.shapes (delayed, conditional)
 missing module named sets - imported by reportlab.platypus.doctemplate (optional)
-missing module named tests - imported by reportlab.platypus.tables (conditional)
+missing module named 'tests.test_platypus_tables' - imported by reportlab.platypus.tables (conditional)
 missing module named renderPM - imported by reportlab.graphics.charts.utils (delayed, conditional)
 missing module named rlextra - imported by reportlab.graphics.charts.textlabels (optional)
 missing module named freetype - imported by reportlab.graphics.utils (delayed, conditional, optional)
