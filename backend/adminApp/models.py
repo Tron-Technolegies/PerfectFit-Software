@@ -71,6 +71,7 @@ class Product(models.Model):
     image = models.ImageField(upload_to='rental_items/', blank=True, null=True)
     rental_price = models.DecimalField(max_digits=10, decimal_places=2)
     code = models.CharField(max_length=20, unique=True, blank=True)
+    size_variants = models.JSONField(default=list, blank=True, null=True)
 
     def save(self, *args, **kwargs):
         if not self.code:
@@ -98,6 +99,67 @@ class Product(models.Model):
     @property
     def total_rented_times(self):
         return self.rentalitem_set.count()
+
+    def get_stock_data(self):
+        units = list(self.units.all())
+        unit_sizes = {}
+        for u in units:
+            s = u.size or "Free Size"
+            if s not in unit_sizes:
+                unit_sizes[s] = {"total": 0, "available": 0}
+            unit_sizes[s]["total"] += 1
+            if u.status == "available":
+                unit_sizes[s]["available"] += 1
+
+        result = []
+        seen_sizes = set()
+
+        if self.size_variants and isinstance(self.size_variants, list):
+            for variant in self.size_variants:
+                if not isinstance(variant, dict):
+                    continue
+                size_name = (variant.get("size") or "").strip() or "Free Size"
+                if size_name in seen_sizes:
+                    continue
+                seen_sizes.add(size_name)
+
+                if size_name in unit_sizes:
+                    total_qty = unit_sizes[size_name]["total"]
+                    avail_qty = unit_sizes[size_name]["available"]
+                else:
+                    total_qty = max(0, int(variant.get("qty", 0)))
+                    avail_qty = 0
+
+                result.append({
+                    "size": size_name,
+                    "qty": total_qty,
+                    "available_qty": avail_qty,
+                    "stock_status": "In Stock" if avail_qty > 0 else "Out of Stock",
+                    "is_in_stock": avail_qty > 0,
+                })
+
+        for size_name, counts in unit_sizes.items():
+            if size_name not in seen_sizes:
+                seen_sizes.add(size_name)
+                avail_qty = counts["available"]
+                result.append({
+                    "size": size_name,
+                    "qty": counts["total"],
+                    "available_qty": avail_qty,
+                    "stock_status": "In Stock" if avail_qty > 0 else "Out of Stock",
+                    "is_in_stock": avail_qty > 0,
+                })
+
+        if not result:
+            result.append({
+                "size": "Free Size",
+                "qty": 0,
+                "available_qty": 0,
+                "stock_status": "Out of Stock",
+                "is_in_stock": False,
+            })
+
+        return result
 
 class PhysicalUnit(models.Model):
     STATUS_CHOICES = [
@@ -364,8 +426,12 @@ class Accessory(models.Model):
     def save(self, *args, **kwargs):
         if not self.code:
             last_item = Accessory.objects.order_by('-id').first()
-            next_id = 1 if not last_item else last_item.id + 1
-            self.code = f"ACC{str(next_id).zfill(3)}"
+            next_num = 1 if not last_item else last_item.id + 1
+            code = f"ACC{str(next_num).zfill(3)}"
+            while Accessory.objects.filter(code=code).exists():
+                next_num += 1
+                code = f"ACC{str(next_num).zfill(3)}"
+            self.code = code
         super().save(*args, **kwargs)
 
     def __str__(self):

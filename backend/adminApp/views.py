@@ -35,13 +35,132 @@ from django.http import JsonResponse
 from .models import Product, Category
 import json
 
+import re
+from django.http.multipartparser import MultiPartParser
+
+def sync_product_units(product, stock_data):
+    """
+    Synchronizes PhysicalUnit instances for a product given incoming stock_data:
+    [
+        {"size": "S", "qty": 5, "original_size": "S"},
+        {"size": "M", "qty": 0, "original_size": "M"},
+        ...
+    ]
+    """
+    if stock_data and isinstance(stock_data, str):
+        try:
+            stock_data = json.loads(stock_data)
+        except Exception:
+            stock_data = []
+
+    if not isinstance(stock_data, list):
+        return
+
+    # Normalize incoming groups
+    normalized_groups = []
+    seen_sizes = {}
+    for group in stock_data:
+        if not isinstance(group, dict):
+            continue
+        raw_size = group.get("size")
+        size_str = (raw_size.strip() if isinstance(raw_size, str) else "") or "Free Size"
+        try:
+            qty = max(0, int(group.get("qty", 0)))
+        except (ValueError, TypeError):
+            qty = 0
+
+        orig_size = group.get("original_size")
+        if isinstance(orig_size, str):
+            orig_size = orig_size.strip() or "Free Size"
+        else:
+            orig_size = None
+
+        if size_str in seen_sizes:
+            seen_sizes[size_str]["qty"] += qty
+        else:
+            entry = {
+                "size": size_str,
+                "qty": qty,
+                "original_size": orig_size
+            }
+            seen_sizes[size_str] = entry
+            normalized_groups.append(entry)
+
+    # 1. Handle renaming: if original_size was provided and changed
+    for group in normalized_groups:
+        orig = group.get("original_size")
+        new_s = group["size"]
+        if orig and orig != new_s:
+            product.units.filter(size=orig).update(size=new_s)
+
+    # 2. Check 1-to-1 renaming fallback: if product had exactly 1 size in DB and normalized_groups has 1 size
+    existing_sizes = list(dict.fromkeys(product.units.values_list('size', flat=True)))
+    if len(existing_sizes) == 1 and len(normalized_groups) == 1:
+        if existing_sizes[0] != normalized_groups[0]["size"]:
+            product.units.filter(size=existing_sizes[0]).update(size=normalized_groups[0]["size"])
+
+    # 3. For each group, adjust physical units to match target qty
+    existing_uids = list(product.units.values_list('unit_id', flat=True))
+    max_num = 0
+    for uid in existing_uids:
+        m = re.search(r'-(\d+)$', uid)
+        if m:
+            max_num = max(max_num, int(m.group(1)))
+    if max_num == 0:
+        max_num = product.units.count()
+
+    for group in normalized_groups:
+        target_size = group["size"]
+        target_qty = group["qty"]
+
+        current_units = list(product.units.filter(size=target_size).order_by('id'))
+        current_count = len(current_units)
+
+        if target_qty > current_count:
+            # Add new available units
+            needed = target_qty - current_count
+            for _ in range(needed):
+                max_num += 1
+                candidate_id = f"{product.code}-{str(max_num).zfill(2)}"
+                while PhysicalUnit.objects.filter(unit_id=candidate_id).exists():
+                    max_num += 1
+                    candidate_id = f"{product.code}-{str(max_num).zfill(2)}"
+
+                PhysicalUnit.objects.create(
+                    product=product,
+                    unit_id=candidate_id,
+                    size=target_size,
+                    status='available'
+                )
+
+        elif target_qty < current_count:
+            # Reduce units: delete available units
+            excess = current_count - target_qty
+            available_units = product.units.filter(size=target_size, status='available').order_by('-id')
+            for u in available_units[:excess]:
+                u.delete()
+
+    # 4. Remove available units for sizes that were completely removed
+    incoming_size_names = {g["size"] for g in normalized_groups}
+    product.units.filter(status='available').exclude(size__in=incoming_size_names).delete()
+
+    # 5. Persist the configured size variants on the Product model
+    product.size_variants = [
+        {"size": g["size"], "qty": g["qty"]}
+        for g in normalized_groups
+    ]
+    product.save()
+
 @csrf_exempt
 def create_rental_item(request):
     if request.method == "POST":
 
-        #  Handle BOTH JSON & form-data
-        if request.content_type == "application/json":
-            data = json.loads(request.body)
+        # Handle BOTH JSON & form-data
+        if request.content_type and "application/json" in request.content_type:
+            try:
+                data = json.loads(request.body.decode('utf-8'))
+            except Exception:
+                data = {}
             image = None
         else:
             data = request.POST
@@ -62,53 +181,41 @@ def create_rental_item(request):
         )
         
         # Create units with sizes
-        # Support either a simple count or a list of units with sizes
         stock_data = data.get("stock_data") 
-        
-        # If it's a string (from FormData), parse it
         if stock_data and isinstance(stock_data, str):
             try:
                 stock_data = json.loads(stock_data)
-            except:
+            except Exception:
                 pass
 
-        # If it's still not found or not a list, check request.POST directly (QueryDict issue)
         if not stock_data or not isinstance(stock_data, list):
             raw_stock = request.POST.get("stock_data")
             if raw_stock:
                 try:
                     stock_data = json.loads(raw_stock)
-                except:
+                except Exception:
                     pass
 
-        if stock_data and isinstance(stock_data, list):
-            unit_index = 1
-            for group in stock_data:
-                size = group.get("size") or "Free Size"
-                qty = int(group.get("qty", 1))
-                for _ in range(qty):
-                    PhysicalUnit.objects.create(
-                        product=item,
-                        unit_id=f'{item.code}-{str(unit_index).zfill(2)}',
-                        size=size,
-                        status='available'
-                    )
-                    unit_index += 1
-        else:
-            qty = int(data.get("total_stock", 1))
+        if not stock_data or not isinstance(stock_data, list):
+            try:
+                qty = int(data.get("total_stock", 1))
+            except (ValueError, TypeError):
+                qty = 1
             size = data.get("size") or "Free Size"
-            for i in range(qty):
-                PhysicalUnit.objects.create(
-                    product=item,
-                    unit_id=f'{item.code}-{str(i+1).zfill(2)}',
-                    size=size,
-                    status='available'
-                )
+            stock_data = [{"size": size, "qty": qty}]
+
+        sync_product_units(item, stock_data)
+
+        item.refresh_from_db()
+        stock_data_result = item.get_stock_data()
 
         return JsonResponse({
             "message": "Item created",
             "id": item.id,
             "code": item.code,
+            "total_stock": item.total_stock,
+            "available_stock": item.available_stock,
+            "stock_data": stock_data_result,
             "image_url": item.image.url if item.image else None
         })
 
@@ -120,13 +227,14 @@ def get_all_rental_items(request):
 
         data = []
         for item in items:
+            stock_data = item.get_stock_data()
             data.append({
                 "id": item.id,
                 "code": item.code,
                 "name": item.name,
                 "category": item.category.name,
                 "category_id": item.category.id,
-                "size": ", ".join(set(item.units.values_list("size", flat=True))),
+                "size": ", ".join(dict.fromkeys(s["size"] for s in stock_data)),
                 "colour": item.colour,
                 "description": item.description,
                 "rental_price": float(item.rental_price),
@@ -136,6 +244,7 @@ def get_all_rental_items(request):
                 "is_available": item.is_available,
                 "times_rented": item.total_rented_times,
                 "image_url": item.image.url if item.image else None,
+                "stock_data": stock_data,
                 "has_rented": item.units.filter(status='rented').exists(),
                 "has_prebooked": RentalBooking.objects.filter(items__product=item, status='PRE_BOOKED').exists(),
                 "has_returned": RentalBooking.objects.filter(items__product=item, status='RETURNED').exists(),
@@ -151,13 +260,14 @@ def get_rental_item(request, item_id):
     except Product.DoesNotExist:
         return JsonResponse({"error": "Item not found"}, status=404)
 
+    stock_data = item.get_stock_data()
     data = {
         "id": item.id,
         "code": item.code,
         "name": item.name,
         "category": item.category.name,
         "category_id": item.category.id,
-        "size": ", ".join(set(item.units.values_list("size", flat=True))),
+        "size": ", ".join(dict.fromkeys(s["size"] for s in stock_data)),
         "colour": item.colour,
         "description": item.description,
         "rental_price": float(item.rental_price),
@@ -166,27 +276,35 @@ def get_rental_item(request, item_id):
         "condition": "ready" if item.is_available else "out_of_stock",
         "is_available": item.is_available,
         "times_rented": item.total_rented_times,
-        "image_url": item.image.url if item.image else None  #  added
+        "image_url": item.image.url if item.image else None,
+        "stock_data": stock_data,
     }
 
     return JsonResponse(data)
 
 #  UPDATE
-from .models import Product, Category
-from django.http import JsonResponse
-import json
-
 @csrf_exempt
 def update_rental_item(request, item_id):
-    if request.method == "PUT":
+    if request.method in ["PUT", "PATCH", "POST"]:
 
-        # Handle both JSON & form-data
-        if request.content_type == "application/json":
-            data = json.loads(request.body)
+        # Handle both JSON & multipart/form-data
+        if request.content_type and "application/json" in request.content_type:
+            try:
+                data = json.loads(request.body.decode('utf-8'))
+            except Exception:
+                data = {}
             image = None
         else:
-            data = request.POST
-            image = request.FILES.get("image")
+            if request.POST or request.FILES:
+                data = request.POST
+                image = request.FILES.get("image")
+            else:
+                try:
+                    data, files = MultiPartParser(request.META, io.BytesIO(request.body), request.upload_handlers).parse()
+                    image = files.get("image")
+                except Exception:
+                    data = request.POST
+                    image = request.FILES.get("image")
 
         try:
             item = Product.objects.get(id=item_id)
@@ -194,21 +312,21 @@ def update_rental_item(request, item_id):
             return JsonResponse({"error": "Item not found"}, status=404)
 
         # Update fields
-        item.name = data.get("name", item.name)
-        # item.size moved to PhysicalUnit
-        item.colour = data.get("colour", item.colour)
-        item.description = data.get("description", item.description)
-        item.rental_price = data.get("rental_price", item.rental_price)
-        # item.total_stock is now a property
-        # item.available_stock is now a property
-        # item.condition moved to PhysicalUnit
+        if "name" in data:
+            item.name = data.get("name")
+        if "colour" in data:
+            item.colour = data.get("colour")
+        if "description" in data:
+            item.description = data.get("description")
+        if "rental_price" in data:
+            item.rental_price = data.get("rental_price")
 
         # Update image if provided
         if image:
             item.image = image
 
         # Update category
-        if "category_id" in data:
+        if "category_id" in data and data.get("category_id"):
             try:
                 category = Category.objects.get(id=data.get("category_id"))
                 item.category = category
@@ -217,10 +335,45 @@ def update_rental_item(request, item_id):
 
         item.save()
 
+        # Update stock / units if stock_data or total_stock or size is provided
+        stock_data = data.get("stock_data")
+        if stock_data and isinstance(stock_data, str):
+            try:
+                stock_data = json.loads(stock_data)
+            except Exception:
+                pass
+
+        if stock_data is not None and isinstance(stock_data, list):
+            sync_product_units(item, stock_data)
+        elif "total_stock" in data or "size" in data:
+            try:
+                qty = int(data.get("total_stock", item.total_stock))
+            except (ValueError, TypeError):
+                qty = item.total_stock
+            size = data.get("size") or "Free Size"
+            sync_product_units(item, [{"size": size, "qty": qty}])
+
+        item.refresh_from_db()
+        stock_data_result = item.get_stock_data()
+
         return JsonResponse({
             "message": "Item updated successfully",
+            "id": item.id,
             "code": item.code,
-            "image_url": item.image.url if item.image else None
+            "name": item.name,
+            "category": item.category.name,
+            "category_id": item.category.id,
+            "size": ", ".join(dict.fromkeys(s["size"] for s in stock_data_result)),
+            "colour": item.colour,
+            "description": item.description,
+            "rental_price": float(item.rental_price),
+            "total_stock": item.total_stock,
+            "available_stock": item.available_stock,
+            "condition": "ready" if item.is_available else "out_of_stock",
+            "is_available": item.is_available,
+            "times_rented": item.total_rented_times,
+            "image_url": item.image.url if item.image else None,
+            "stock_data": stock_data_result,
         })
 
     return JsonResponse({"error": "Invalid request method"}, status=405)
@@ -1197,27 +1350,55 @@ def get_material_by_code(request, code):
 @csrf_exempt
 def create_accessory(request):
     if request.method == "POST":
-        if request.content_type == "application/json":
-            data = json.loads(request.body)
-            image = None
-        else:
-            data = request.POST
-            image = request.FILES.get("image")
+        try:
+            if request.content_type and "application/json" in request.content_type:
+                data = json.loads(request.body)
+                image = None
+            else:
+                data = request.POST
+                image = request.FILES.get("image")
 
-        accessory = Accessory.objects.create(
-            name=data.get("name"),
-            expense_category=data.get("category"),
-            description=data.get("description"),
-            price=Decimal(str(data.get("price", 0))),
-            stock=int(data.get("stock", 0)),
-            image=image
-        )
-        return JsonResponse({
-            "message": "Accessory created",
-            "id": accessory.id,
-            "code": accessory.code,
-            "image_url": accessory.image.url if accessory.image else None
-        })
+            name = (data.get("name") or "").strip()
+            if not name:
+                return JsonResponse({"error": "Product name is required"}, status=400)
+
+            category = data.get("category") or "Formal"
+            description = data.get("description", "")
+
+            raw_price = data.get("price", 0)
+            try:
+                price = Decimal(str(raw_price)) if raw_price not in [None, ""] else Decimal("0")
+            except Exception:
+                price = Decimal("0")
+
+            raw_stock = data.get("stock", 0)
+            try:
+                stock = int(raw_stock) if raw_stock not in [None, ""] else 0
+            except Exception:
+                stock = 0
+
+            accessory = Accessory.objects.create(
+                name=name,
+                category=category,
+                description=description,
+                price=price,
+                stock=stock,
+                image=image
+            )
+            return JsonResponse({
+                "message": "Accessory created",
+                "id": accessory.id,
+                "code": accessory.code,
+                "name": accessory.name,
+                "category": accessory.category,
+                "price": float(accessory.price),
+                "stock": accessory.stock,
+                "image_url": accessory.image.url if accessory.image else None
+            }, status=201)
+        except Exception as e:
+            err_msg = str(e.message if hasattr(e, 'message') else e)
+            return JsonResponse({"error": err_msg}, status=400)
+    return JsonResponse({"error": "Method not allowed"}, status=405)
 
 def get_all_accessories(request):
     if request.method == "GET":
@@ -1239,33 +1420,53 @@ def get_all_accessories(request):
 @csrf_exempt
 def update_accessory(request, accessory_id):
     if request.method in ["POST", "PUT"]:
-        if request.content_type == "application/json":
-            data = json.loads(request.body)
-            image = None
-        else:
-            data = request.POST
-            image = request.FILES.get("image")
-
         try:
-            acc = Accessory.objects.get(id=accessory_id)
-        except Accessory.DoesNotExist:
-            return JsonResponse({"error": "Accessory not found"}, status=404)
-        
-        acc.name = data.get("name", acc.name)
-        acc.category = data.get("category", acc.category)
-        acc.description = data.get("description", acc.description)
-        if "price" in data:
-            acc.price = Decimal(str(data.get("price")))
-        if "stock" in data:
-            acc.stock = int(data.get("stock"))
-        if image:
-            acc.image = image
+            if request.content_type and "application/json" in request.content_type:
+                data = json.loads(request.body)
+                image = None
+            else:
+                data = request.POST
+                image = request.FILES.get("image")
+
+            try:
+                acc = Accessory.objects.get(id=accessory_id)
+            except Accessory.DoesNotExist:
+                return JsonResponse({"error": "Accessory not found"}, status=404)
             
-        acc.save()
-        return JsonResponse({
-            "message": "Accessory updated",
-            "image_url": acc.image.url if acc.image else None
-        })
+            if "name" in data and data.get("name"):
+                acc.name = data.get("name").strip()
+            if "category" in data and data.get("category"):
+                acc.category = data.get("category")
+            if "description" in data:
+                acc.description = data.get("description")
+            if "price" in data and data.get("price") not in [None, ""]:
+                try:
+                    acc.price = Decimal(str(data.get("price")))
+                except Exception:
+                    pass
+            if "stock" in data and data.get("stock") not in [None, ""]:
+                try:
+                    acc.stock = int(data.get("stock"))
+                except Exception:
+                    pass
+            if image:
+                acc.image = image
+                
+            acc.save()
+            return JsonResponse({
+                "message": "Accessory updated",
+                "id": acc.id,
+                "code": acc.code,
+                "name": acc.name,
+                "category": acc.category,
+                "price": float(acc.price),
+                "stock": acc.stock,
+                "image_url": acc.image.url if acc.image else None
+            })
+        except Exception as e:
+            err_msg = str(e.message if hasattr(e, 'message') else e)
+            return JsonResponse({"error": err_msg}, status=400)
+    return JsonResponse({"error": "Method not allowed"}, status=405)
 
 @csrf_exempt
 def delete_accessory(request, accessory_id):
@@ -1289,7 +1490,11 @@ def create_accessory_sale(request):
         # 🔹 Coupon Logic
         coupon_id = data.get("coupon_id")
         coupon = None
-        discount_amount = Decimal(str(data.get("discount", 0))) # Manual discount if any
+        discount_val = data.get("discount", 0)
+        try:
+            discount_amount = Decimal(str(discount_val)) if discount_val not in [None, ""] else Decimal("0")
+        except Exception:
+            discount_amount = Decimal("0")
         
         if coupon_id:
             try:
@@ -1306,13 +1511,13 @@ def create_accessory_sale(request):
 
         try:
             qty = int(data.get("quantity", 1))
-            total_price = (qty * accessory.price) - discount_amount
+            total_price = max(Decimal("0"), (qty * accessory.price) - discount_amount)
             sale = AccessorySale.objects.create(
                 accessory=accessory,
-                customer_name=data.get("customer_name"),
-                customer_phone=data.get("customer_phone"),
-                customer_email=data.get("customer_email"),
-                customer_address=data.get("customer_address"),
+                customer_name=data.get("customer_name") or "Walk-in Customer",
+                customer_phone=data.get("customer_phone") or "",
+                customer_email=data.get("customer_email") or "",
+                customer_address=data.get("customer_address") or "",
                 quantity=qty,
                 discount_amount=discount_amount,
                 coupon=coupon,
@@ -1321,7 +1526,10 @@ def create_accessory_sale(request):
             # Handle payments array
             payments_data = data.get('payments', [])
             for p in payments_data:
-                amt = float(p.get('amount', 0))
+                try:
+                    amt = float(p.get('amount') or 0)
+                except (ValueError, TypeError):
+                    amt = 0.0
                 if amt > 0:
                     Payment.objects.create(
                         amount=amt,
@@ -1341,8 +1549,10 @@ def create_accessory_sale(request):
                     accessory_sale=sale
                 )
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=400)
+            err_msg = str(e.message if hasattr(e, 'message') else e)
+            return JsonResponse({"error": err_msg}, status=400)
             
+        accessory.refresh_from_db()
         return JsonResponse({
             "message": "Sale recorded",
             "sale_id": sale.id,
@@ -1351,7 +1561,7 @@ def create_accessory_sale(request):
 
 @csrf_exempt
 def update_accessory_sale(request, sale_id):
-    if request.method == "PUT":
+    if request.method in ["PUT", "POST"]:
         data = json.loads(request.body)
         try:
             sale = AccessorySale.objects.get(id=sale_id)
@@ -1363,17 +1573,48 @@ def update_accessory_sale(request, sale_id):
         sale.customer_email = data.get("customer_email", sale.customer_email)
         sale.customer_address = data.get("customer_address", sale.customer_address)
         
-        if "quantity" in data:
-            sale.quantity = int(data.get("quantity"))
-        if "discount" in data:
-            sale.discount = Decimal(str(data.get("discount")))
-        if "total_price" in data:
-            sale.total_price = Decimal(str(data.get("total_price")))
+        if "quantity" in data and data.get("quantity") not in [None, ""]:
+            try:
+                sale.quantity = int(data.get("quantity"))
+            except (ValueError, TypeError):
+                pass
+        if "discount" in data and data.get("discount") not in [None, ""]:
+            try:
+                sale.discount_amount = Decimal(str(data.get("discount")))
+            except Exception:
+                pass
+        elif "discount_amount" in data and data.get("discount_amount") not in [None, ""]:
+            try:
+                sale.discount_amount = Decimal(str(data.get("discount_amount")))
+            except Exception:
+                pass
+        if "total_price" in data and data.get("total_price") not in [None, ""]:
+            try:
+                sale.total_price = Decimal(str(data.get("total_price")))
+            except Exception:
+                pass
             
         try:
             sale.save()
+            payments_data = data.get("payments", [])
+            if payments_data:
+                sale.payments.all().delete()
+                for p in payments_data:
+                    try:
+                        amt = float(p.get('amount') or 0)
+                    except (ValueError, TypeError):
+                        amt = 0.0
+                    if amt > 0:
+                        Payment.objects.create(
+                            amount=amt,
+                            payment_method=p.get('method', 'CASH'),
+                            payment_type='INCOME',
+                            transaction_reference=p.get('reference', ''),
+                            accessory_sale=sale
+                        )
         except Exception as e:
-            return JsonResponse({"error": str(e)}, status=400)
+            err_msg = str(e.message if hasattr(e, 'message') else e)
+            return JsonResponse({"error": err_msg}, status=400)
             
         return JsonResponse({"message": "Sale updated successfully"})
 
@@ -1401,10 +1642,11 @@ def get_all_accessory_sales(request):
                 "customer_email": s.customer_email,
                 "customer_address": s.customer_address,
                 "quantity": s.quantity,
+                "discount": float(s.discount_amount),
                 "discount_amount": float(s.discount_amount),
                 "total_price": float(s.total_price),
-            "payments": [{"id": p.id, "amount": float(p.amount), "method": p.payment_method, "reference": p.transaction_reference, "date": p.created_at.isoformat()} for p in s.payments.all()],
-                "date": s.sale_date
+                "payments": [{"id": p.id, "amount": float(p.amount), "method": p.payment_method, "reference": p.transaction_reference, "date": p.created_at.isoformat()} for p in s.payments.all()],
+                "date": s.sale_date.isoformat() if s.sale_date else ""
             })
         return JsonResponse(data, safe=False)
 
