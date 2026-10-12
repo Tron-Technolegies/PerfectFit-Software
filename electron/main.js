@@ -29,7 +29,6 @@ function startBackend() {
     console.error("[Electron] Backend failed to start:", err.message);
   });
 }
-
 // ── Poll health endpoint until backend is ready ─────────────────────────────
 function waitForBackend(retries = 30) {
   return new Promise((resolve, reject) => {
