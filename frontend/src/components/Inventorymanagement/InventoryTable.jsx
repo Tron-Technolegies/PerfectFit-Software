@@ -142,8 +142,13 @@ export default function InventoryTable({ onItemsChange }) {
     setIsModalOpen(true);
   };
 
-  const openEditModal = (item) => {
-    setEditingItem(item);
+  const openEditModal = async (item) => {
+    try {
+      const response = await getInventoryItem(item.id);
+      setEditingItem(response.data);
+    } catch {
+      setEditingItem(item);
+    }
     setIsModalOpen(true);
   };
 

@@ -27,13 +27,12 @@ export default function Accessories() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      if (activeTab === "products") {
-        const response = await getAccessories();
-        setAccessories(response.data);
-      } else {
-        const response = await getAccessorySales();
-        setSales(response.data);
-      }
+      const [accRes, salesRes] = await Promise.all([
+        getAccessories(),
+        getAccessorySales()
+      ]);
+      setAccessories(accRes.data || []);
+      setSales(salesRes.data || []);
     } catch (error) {
       console.error("Failed to fetch accessories data:", error);
       setToast({ message: "Failed to load data", type: "error" });
@@ -71,9 +70,11 @@ export default function Accessories() {
         await createAccessory(formData);
         setToast({ message: "Product added to inventory!", type: "success" });
       }
+      setIsProductModalOpen(false);
       fetchData();
     } catch (error) {
       setToast({ message: error.response?.data?.error || "Action failed", type: "error" });
+      throw error;
     }
   };
 
@@ -96,7 +97,15 @@ export default function Accessories() {
   };
 
   const handleEditSale = (sale) => {
-    const product = accessories.find(a => a.id === sale.accessory_id);
+    let product = accessories.find(a => a.id === sale.accessory_id);
+    if (!product) {
+      product = {
+        id: sale.accessory_id,
+        name: sale.accessory_name,
+        price: sale.total_price / (sale.quantity || 1),
+        stock: 0
+      };
+    }
     setSelectedProduct(product);
     setSelectedSale(sale);
     setIsSellModalOpen(true);
@@ -108,6 +117,10 @@ export default function Accessories() {
   };
 
   const handleCompleteSale = async (saleData) => {
+    if (!saleData) {
+      fetchData();
+      return;
+    }
     try {
       let res;
       if (selectedSale) {
@@ -115,7 +128,7 @@ export default function Accessories() {
         setToast({ message: "Sale updated successfully!", type: "success" });
       } else {
         res = await recordAccessorySale({
-          accessory_id: selectedProduct.id,
+          accessory_id: selectedProduct?.id,
           ...saleData
         });
         setToast({ message: "Sale recorded successfully!", type: "success" });

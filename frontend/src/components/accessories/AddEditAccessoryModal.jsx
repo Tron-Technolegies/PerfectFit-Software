@@ -46,23 +46,28 @@ export default function AddEditAccessoryModal({ onClose, onSave, accessory = nul
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!form.name || !form.price || !form.stock) return;
+    if (!form.name.trim() || form.price === "" || form.stock === "" || form.stock === undefined || form.stock === null) return;
 
     setSaving(true);
     
     const formData = new FormData();
-    formData.append("name", form.name);
+    formData.append("name", form.name.trim());
     formData.append("category", form.category);
     formData.append("price", form.price);
     formData.append("stock", form.stock);
-    formData.append("description", form.description);
+    formData.append("description", form.description || "");
     if (imageFile) {
       formData.append("image", imageFile);
     }
 
-    await onSave(formData);
-    setSaving(false);
-    onClose();
+    try {
+      await onSave(formData);
+      onClose();
+    } catch (err) {
+      setToast({ message: err.response?.data?.error || "Failed to save accessory", type: "error" });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const categories = ["Formal", "Casual", "Jewelry", "Essentials", "Other"];

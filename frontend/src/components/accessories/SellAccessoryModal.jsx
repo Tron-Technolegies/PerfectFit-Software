@@ -61,7 +61,7 @@ export default function SellAccessoryModal({ onClose, onSave, accessory, sale = 
     setValidatingCoupon(true);
     setCouponError("");
     try {
-      const subtotal = Number(accessory.price) * Number(form.quantity);
+      const subtotal = Number(accessory?.price || 0) * Number(form.quantity);
       const res = await validateCoupon(couponCode, subtotal);
       if (res.data.valid) {
         setCouponData(res.data);
@@ -77,8 +77,9 @@ export default function SellAccessoryModal({ onClose, onSave, accessory, sale = 
     }
   };
 
-  const totalPrice = (
-    Number(accessory.price) * Number(form.quantity) - 
+  const totalPrice = Math.max(
+    0,
+    Number(accessory?.price || 0) * Number(form.quantity) - 
     Number(form.discount || 0) - 
     (couponData?.discount_amount || 0)
   ).toFixed(2);
@@ -98,7 +99,7 @@ export default function SellAccessoryModal({ onClose, onSave, accessory, sale = 
 
     // Check stock only for new sales or if quantity increased
     const stockChange = sale ? Number(form.quantity) - Number(sale.quantity) : Number(form.quantity);
-    if (stockChange > accessory.stock) {
+    if (stockChange > Number(accessory?.stock ?? 0)) {
       setToast({ message: "Not enough stock available!", type: "error" });
       return;
     }
@@ -117,7 +118,7 @@ export default function SellAccessoryModal({ onClose, onSave, accessory, sale = 
         res = await updateAccessorySale(sale.id, saleData);
       } else {
         res = await recordAccessorySale({
-          accessory_id: accessory.id,
+          accessory_id: accessory?.id,
           ...saleData
         });
       }
@@ -125,10 +126,10 @@ export default function SellAccessoryModal({ onClose, onSave, accessory, sale = 
       setSuccessData({
         ...saleData,
         id: res.data.sale_id || sale?.id,
-        accessory_name: accessory.name,
+        accessory_name: accessory?.name || "Accessory",
         discount: Number(form.discount || 0) + (couponData?.discount_amount || 0)
       });
-      onSave(); // Trigger refresh in parent
+      if (onSave) onSave(); // Trigger refresh in parent
     } catch (err) {
       setToast({ message: err.response?.data?.error || "Sale failed", type: "error" });
     } finally {
@@ -209,22 +210,22 @@ export default function SellAccessoryModal({ onClose, onSave, accessory, sale = 
           <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-100">
             <div className="flex items-center gap-3">
               <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center border border-gray-100 shadow-sm overflow-hidden">
-                {accessory.image_url ? (
+                {accessory?.image_url ? (
                    <img src={accessory.image_url} className="w-full h-full object-cover" alt="" />
                 ) : (
                    <FiPackage className="text-pink-500" size={24} />
                 )}
               </div>
               <div>
-                <h4 className="text-sm font-bold text-gray-800">{accessory.name}</h4>
+                <h4 className="text-sm font-bold text-gray-800">{accessory?.name || "Accessory"}</h4>
                 <p className="text-[10px] text-gray-400 font-bold uppercase tracking-tight">
-                  {accessory.category} • Price: ₹{accessory.price}
+                  {accessory?.category || "Category"} • Price: ₹{accessory?.price ?? 0}
                 </p>
               </div>
             </div>
             <div className="text-right">
               <p className="text-[10px] text-gray-400 font-bold uppercase">Current Stock</p>
-              <p className="text-lg font-black text-gray-800">{accessory.stock}</p>
+              <p className="text-lg font-black text-gray-800">{accessory?.stock ?? 0}</p>
             </div>
           </div>
 
@@ -329,7 +330,7 @@ export default function SellAccessoryModal({ onClose, onSave, accessory, sale = 
                 <div className="bg-gray-50 rounded-2xl p-5 border border-dashed border-gray-200 mt-6">
                    <div className="flex justify-between items-center mb-2">
                       <span className="text-[10px] font-bold text-gray-400 uppercase">Subtotal</span>
-                      <span className="text-sm font-bold text-gray-600">₹{(Number(accessory.price) * Number(form.quantity)).toFixed(2)}</span>
+                      <span className="text-sm font-bold text-gray-600">₹{(Number(accessory?.price || 0) * Number(form.quantity)).toFixed(2)}</span>
                    </div>
                    {Number(form.discount) > 0 && (
                      <div className="flex justify-between items-center mb-2 text-red-500">
@@ -446,7 +447,11 @@ export default function SellAccessoryModal({ onClose, onSave, accessory, sale = 
           </button>
           <button
             type="submit"
-            disabled={saving || form.quantity > accessory.stock}
+            disabled={
+              saving ||
+              (!sale && Number(form.quantity) > Number(accessory?.stock ?? 0)) ||
+              (sale && (Number(form.quantity) - Number(sale.quantity)) > Number(accessory?.stock ?? 0))
+            }
             className="px-8 py-2.5 bg-green-500 text-white rounded-xl font-bold shadow-lg shadow-green-200 hover:bg-green-600 active:scale-95 disabled:opacity-50 disabled:active:scale-100 transition-all text-sm flex items-center gap-2"
           >
             {saving ? <FiRefreshCw className="animate-spin" /> : <FiCheck />}

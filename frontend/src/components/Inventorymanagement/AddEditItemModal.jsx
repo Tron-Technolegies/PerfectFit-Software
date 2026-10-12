@@ -20,7 +20,7 @@ export default function AddEditItemModal({ categories = [], item, saving, onClos
   useEffect(() => {
     if (!item) {
       setForm(emptyForm);
-      setStockGroups([{ size: "", qty: 1 }]);
+      setStockGroups([{ size: "", qty: 1, original_size: null }]);
       setImagePreview("");
       setImageFile(null);
       return;
@@ -34,10 +34,36 @@ export default function AddEditItemModal({ categories = [], item, saving, onClos
       rental_price: item.rental_price || "",
       condition: item.condition || "ready",
     });
-    // For editing an existing item, we might not want to re-create units from here,
-    // but the user might want to add more. For now, let's keep it simple for new items.
-    // Actually, if it's an edit, we might want to hide the stock config or handle it differently.
-    // The user's request is "fix it too" regarding the 10 sarees example.
+
+    if (item.stock_data && Array.isArray(item.stock_data) && item.stock_data.length > 0) {
+      setStockGroups(
+        item.stock_data.map((g) => ({
+          size: g.size ?? "",
+          qty: g.qty !== undefined ? g.qty : (g.quantity !== undefined ? g.quantity : 0),
+          original_size: g.size ?? "",
+        }))
+      );
+    } else if (item.size) {
+      const sizes = item.size.split(",").map((s) => s.trim()).filter(Boolean);
+      if (sizes.length > 0) {
+        setStockGroups(
+          sizes.map((s) => ({
+            size: s,
+            qty: item.total_stock !== undefined ? item.total_stock : 1,
+            original_size: s,
+          }))
+        );
+      } else {
+        setStockGroups([
+          { size: "Free Size", qty: item.total_stock !== undefined ? item.total_stock : 1, original_size: "Free Size" }
+        ]);
+      }
+    } else {
+      setStockGroups([
+        { size: "", qty: item.total_stock !== undefined ? item.total_stock : 1, original_size: "" }
+      ]);
+    }
+
     setImagePreview(item.image_url ? getServerUrl(item.image_url) : "");
     setImageFile(null);
   }, [item]);
@@ -52,12 +78,15 @@ export default function AddEditItemModal({ categories = [], item, saving, onClos
 
   const handleStockGroupChange = (index, field, value) => {
     const newGroups = [...stockGroups];
-    newGroups[index][field] = value;
+    newGroups[index] = {
+      ...newGroups[index],
+      [field]: field === "qty" ? (value === "" ? "" : Math.max(0, parseInt(value, 10) || 0)) : value,
+    };
     setStockGroups(newGroups);
   };
 
   const addStockGroup = () => {
-    setStockGroups([...stockGroups, { size: "", qty: 1 }]);
+    setStockGroups([...stockGroups, { size: "", qty: 1, original_size: null }]);
   };
 
   const removeStockGroup = (index) => {
@@ -77,13 +106,21 @@ export default function AddEditItemModal({ categories = [], item, saving, onClos
   const handleSubmit = (event) => {
     event.preventDefault();
 
+    const formattedStock = stockGroups.map((g) => ({
+      size: (g.size || "").trim(),
+      qty: g.qty === "" ? 0 : Math.max(0, parseInt(g.qty, 10) || 0),
+      original_size: g.original_size,
+    }));
+
+    const totalStock = formattedStock.reduce((acc, curr) => acc + curr.qty, 0);
+
     onSave(
       {
         ...form,
         category_id: Number(form.category_id),
         rental_price: Number(form.rental_price),
-        stock_data: stockGroups, // Pass the array of {size, qty}
-        total_stock: stockGroups.reduce((acc, curr) => acc + Number(curr.qty), 0),
+        stock_data: formattedStock,
+        total_stock: totalStock,
         image: imageFile, 
       },
       imagePreview,
@@ -192,59 +229,57 @@ export default function AddEditItemModal({ categories = [], item, saving, onClos
                 required
             />
           </div>
+          <div className="space-y-4 border-t border-gray-100 pt-6">
+            <div className="flex justify-between items-center">
+                <h3 className="text-xs font-black uppercase text-gray-500 tracking-widest">
+                  {item ? "Stock Configuration" : "Initial Stock Configuration"}
+                </h3>
+                <button 
+                    type="button" 
+                    onClick={addStockGroup}
+                    className="text-[10px] font-black uppercase text-pink-500 hover:text-pink-600 flex items-center gap-1"
+                >
+                    <FiPlus /> Add Size Group
+                </button>
+            </div>
 
-          {!item && (
-             <div className="space-y-4 border-t border-gray-100 pt-6">
-                <div className="flex justify-between items-center">
-                    <h3 className="text-xs font-black uppercase text-gray-500 tracking-widest">Initial Stock Configuration</h3>
-                    <button 
-                        type="button" 
-                        onClick={addStockGroup}
-                        className="text-[10px] font-black uppercase text-pink-500 hover:text-pink-600 flex items-center gap-1"
-                    >
-                        <FiPlus /> Add Size Group
-                    </button>
-                </div>
-
-                <div className="space-y-3">
-                    {stockGroups.map((group, index) => (
-                        <div key={index} className="flex gap-3 items-end animate-in slide-in-from-left-2 duration-200">
-                            <div className="flex-1 space-y-1">
-                                <label className="text-[9px] font-black uppercase text-gray-400 ml-1">Size</label>
-                                <input 
-                                    className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-pink-300 outline-none text-xs"
-                                    placeholder="M, XL, 38..."
-                                    value={group.size}
-                                    onChange={(e) => handleStockGroupChange(index, 'size', e.target.value)}
-                                    required
-                                />
-                            </div>
-                            <div className="w-24 space-y-1">
-                                <label className="text-[9px] font-black uppercase text-gray-400 ml-1">Quantity</label>
-                                <input 
-                                    type="number"
-                                    min="1"
-                                    className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-pink-300 outline-none text-xs font-bold"
-                                    value={group.qty}
-                                    onChange={(e) => handleStockGroupChange(index, 'qty', e.target.value)}
-                                    required
-                                />
-                            </div>
-                            {stockGroups.length > 1 && (
-                                <button 
-                                    type="button"
-                                    onClick={() => removeStockGroup(index)}
-                                    className="p-2.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all mb-0.5"
-                                >
-                                    <FiTrash2 size={14} />
-                                </button>
-                            )}
+            <div className="space-y-3">
+                {stockGroups.map((group, index) => (
+                    <div key={index} className="flex gap-3 items-end animate-in slide-in-from-left-2 duration-200">
+                        <div className="flex-1 space-y-1">
+                            <label className="text-[9px] font-black uppercase text-gray-400 ml-1">Size</label>
+                            <input 
+                                className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-pink-300 outline-none text-xs"
+                                placeholder="M, XL, 38..."
+                                value={group.size}
+                                onChange={(e) => handleStockGroupChange(index, 'size', e.target.value)}
+                            />
                         </div>
-                    ))}
-                </div>
-                <p className="text-[10px] text-gray-400 italic">Example: 3 M, 4 XL, 3 L. This will generate 10 individual unit IDs automatically.</p>
-             </div>
-          )}
+                        <div className="w-24 space-y-1">
+                            <label className="text-[9px] font-black uppercase text-gray-400 ml-1">Quantity</label>
+                            <input 
+                                type="number"
+                                min="0"
+                                className="w-full px-3 py-2 rounded-lg border border-gray-200 focus:border-pink-300 outline-none text-xs font-bold"
+                                value={group.qty}
+                                onChange={(e) => handleStockGroupChange(index, 'qty', e.target.value)}
+                                required
+                            />
+                        </div>
+                        {stockGroups.length > 1 && (
+                            <button 
+                                type="button" 
+                                onClick={() => removeStockGroup(index)}
+                                className="p-2.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all mb-0.5"
+                            >
+                                <FiTrash2 size={14} />
+                            </button>
+                        )}
+                    </div>
+                ))}
+            </div>
+            <p className="text-[10px] text-gray-400 italic">Example: 3 M, 4 XL, 3 L. This will generate 10 individual unit IDs automatically.</p>
+          </div>
         </div>
 
         <div className="flex justify-end gap-3 px-6 py-5 border-t border-[#00000014] bg-gray-50/30">
